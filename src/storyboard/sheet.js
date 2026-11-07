@@ -439,7 +439,7 @@ export function httpInputArgs(input, http) {
  */
 export async function extractFrameRaw(opts) {
   const {
-    input, at, dur, cellW, cellH, ffmpegPath = DEFAULT_FFMPEG, mode = 'mid', timeoutMs, http,
+    input, at, dur, cellW, cellH, ffmpegPath = DEFAULT_FFMPEG, mode = 'mid', timeoutMs, http, reportPts = false,
   } = opts;
   const filter = coverFilter(cellW, cellH);
   const netArgs = httpInputArgs(input, http);
@@ -459,17 +459,17 @@ export async function extractFrameRaw(opts) {
         '-an', '-sn', '-vf', `thumbnail=n=${n},showinfo,${filter}`, '-frames:v', '1',
         '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'];
     } else {
-      args = ['-hide_banner', '-v', 'error', '-nostdin', '-ss', String(seek), ...netArgs, '-i', input,
-        '-an', '-sn', '-vf', filter, '-frames:v', '1',
+      args = ['-hide_banner', '-v', reportPts ? 'info' : 'error', '-nostdin', '-ss', String(seek), ...netArgs, '-i', input,
+        '-an', '-sn', '-vf', reportPts ? `showinfo,${filter}` : filter, '-frames:v', '1',
         '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'];
     }
     const { stdout, stderr } = await exec([ffmpegPath, ...args], { timeoutMs });
     last = { seek, length: stdout.length };
     if (stdout.length < need) continue;
     let actual = seek;
-    if (mode === 'thumb') {
+    if (mode === 'thumb' || reportPts) {
       const hits = [...stderr.matchAll(PTS_RE)].map((m) => Number(m[1]));
-      if (hits.length > 0) actual = seek + hits[hits.length - 1];
+      if (hits.length > 0) actual = seek + (reportPts ? hits[0] : hits[hits.length - 1]);
     }
     return { buffer: Buffer.from(stdout.subarray(0, need)), t: actual };
   }

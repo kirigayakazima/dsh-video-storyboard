@@ -39,6 +39,7 @@ export function storyboardToolSpec() {
     description: [
       'Turn a local video into ONE addressable storyboard image (a numbered grid of frames)',
       'plus a text index of every cell, so you can look at the video yourself instead of guessing.',
+      'For a basic single-image overview use storyboard_contact_sheet first. Use this tool for shot analysis, audio, subtitles, or a requested long-video sequence.',
       '',
       'Each cell is one content segment (shot-aware), sampled at its sharpest frame, with the cell',
       'number burned into the top-left corner. The text lists "cell k (r2c3) = 00:12.76-00:31.40"',

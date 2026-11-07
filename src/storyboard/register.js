@@ -17,6 +17,7 @@ import * as probe from '../tools/probe.js';
 import * as storyboard from '../tools/storyboard.js';
 import * as subtitles from '../tools/subtitles.js';
 import * as zoom from '../tools/zoom.js';
+import { contactTools } from './contact_sheet.js';
 
 /**
  * @param {(spec: object) => object} defineTool  宿主的 defineTool
@@ -24,11 +25,18 @@ import * as zoom from '../tools/zoom.js';
  * @returns {object[]} 已经 `defineTool()` 好的工具
  */
 export function storyboardTools(defineTool, ctx) {
-  return [
-    defineTool({ ...storyboardToolSpec(), execute: (args) => storyboard.execute(ctx, args) }),
-    defineTool({ ...zoomToolSpec(), execute: (args) => zoom.execute(ctx, args) }),
-    defineTool({ ...probeToolSpec(), execute: (args) => probe.execute(ctx, args) }),
-    defineTool({ ...locateToolSpec(), execute: (args) => locate.execute(ctx, args) }),
-    defineTool({ ...subtitlesToolSpec(), execute: (args) => subtitles.execute(ctx, args) }),
+  const tools = [
+    { ...storyboardToolSpec(), execute: (args) => storyboard.execute(ctx, args) },
+    { ...zoomToolSpec(), execute: (args) => zoom.execute(ctx, args) },
+    { ...probeToolSpec(), execute: (args) => probe.execute(ctx, args) },
+    { ...locateToolSpec(), execute: (args) => locate.execute(ctx, args) },
+    { ...subtitlesToolSpec(), execute: (args) => subtitles.execute(ctx, args) },
+    ...contactTools(ctx),
   ];
+  return tools.map(spec => defineTool({
+    ...spec,
+    async execute(...args) {
+      return JSON.parse(JSON.stringify(await spec.execute(...args)));
+    },
+  }));
 }

@@ -13,6 +13,8 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { storyboardTools } from '../src/storyboard/register.js';
+import { contactTools } from '../src/storyboard/contact_sheet.js';
 
 import {
   locateToolSpec, probeToolSpec, storyboardToolSpec, validateToolArgs,
@@ -52,6 +54,19 @@ test('contract: 宿主 defineTool 接受本工具的 schema', async (t) => {
   assert.equal(tool.parameters.properties.input.type, 'string');
   assert.deepEqual(tool.parameters.required, ['input']);
   assert.ok(tool.output?.schema, '输出 schema 必须存在');
+});
+
+test('contract: the host compiles and validates both contact-sheet tools', t => {
+  if (!host) return t.skip('host @deepseek-ai/dsh-tools not found');
+  const tools = storyboardTools(host.defineTool, {});
+  const contact = tools.find(tool => tool.name === 'storyboard_contact_sheet');
+  const detail = tools.find(tool => tool.name === 'storyboard_inspect_detail');
+  const [spec] = contactTools({});
+  assert.deepEqual(host.validateArgs(spec.parameters, { input: 'sample.mp4', cells: 16 }), []);
+  assert.ok(host.validateArgs(spec.parameters, { input: 'sample.mp4', cells: 12 }).length);
+  assert.deepEqual(contact.parameters.required, ['input']);
+  assert.deepEqual(detail.parameters.required.sort(), ['cell', 'sheetId']);
+  assert.deepEqual(detail.output.render({}, { status: 'blocked' }).map(block => block.type), ['text']);
 });
 
 test('contract: 宿主 validateArgs 认这份参数（合法通过、缺参报错）', async (t) => {
