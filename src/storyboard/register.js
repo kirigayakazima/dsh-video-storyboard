@@ -18,6 +18,7 @@ import * as storyboard from '../tools/storyboard.js';
 import * as subtitles from '../tools/subtitles.js';
 import * as zoom from '../tools/zoom.js';
 import { contactTools } from './contact_sheet.js';
+import { trackStoryboard } from './task_status.js';
 
 /**
  * @param {(spec: object) => object} defineTool  宿主的 defineTool
@@ -26,7 +27,8 @@ import { contactTools } from './contact_sheet.js';
  */
 export function storyboardTools(defineTool, ctx) {
   const tools = [
-    { ...storyboardToolSpec(), execute: (args) => storyboard.execute(ctx, args) },
+    { ...storyboardToolSpec(), execute: trackStoryboard(ctx, (args, _exec, progress) =>
+      storyboard.execute(ctx, args, (done, total) => progress(done, total, 'rendering_sheets'))) },
     { ...zoomToolSpec(), execute: (args) => zoom.execute(ctx, args) },
     { ...probeToolSpec(), execute: (args) => probe.execute(ctx, args) },
     { ...locateToolSpec(), execute: (args) => locate.execute(ctx, args) },

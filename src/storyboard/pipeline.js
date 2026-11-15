@@ -1036,6 +1036,7 @@ export async function runStoryboard(opts) {
       ...(sheet.stripH ? { stripH: sheet.stripH } : {}),
       ...(encode ? { png: await encodePngBuffer(sheet.buffer, sheet.width, sheet.height, { ffmpegPath }) } : {}),
     });
+    opts.onSheetProgress?.(out.length, groups.length);
   }
 
   const totalDuration = +cellRanges.reduce((n, r) => n + (r.to - r.from), 0).toFixed(3);

@@ -5,6 +5,7 @@ import { probeVideo } from './probe.js';
 import { isHttpUrl } from './url.js';
 import { imageTokens } from './plan.js';
 import { composeSheet, drawGlyphs, fillRect, encodePngBuffer, extractFrameRaw } from './sheet.js';
+import { trackStoryboard } from './task_status.js';
 
 export const CONTACT_SIZE = 768;
 export const CONTACT_IMAGE_BUDGET = 384;
@@ -60,7 +61,7 @@ export function contactTools(ctx) {
       allowAnonymous: { type: 'boolean', description: 'Allow unsigned URL fetches when no cookies are configured' },
     },
     output,
-    async execute({ input, cells = 9, from = 0, to, allowAnonymous = false }, exec) {
+    execute: trackStoryboard(ctx, async ({ input, cells = 9, from = 0, to, allowAnonymous = false }, exec, progress) => {
       const heart = ctx.get?.('heart');
       const gate = await heart?.evaluateActivity?.({ intent: 'storyboard', category: 'vision' }, { execution: exec });
       if (gate?.suitable === false) return { status: 'blocked', reason: gate.reason };
@@ -77,7 +78,9 @@ export function contactTools(ctx) {
         const at = from + (i + 0.5) * (to - from) / cells;
         const frame = await extractFrameRaw({ input: source, at, cellW: cell, cellH: cell, reportPts: true });
         frames.push({ ...frame, at: frame.t, seek: at, index: i + 1 });
+        progress(i + 1, cells);
       }
+      exec?.signal?.throwIfAborted();
       const sheet = composeContactSheet(frames);
       const sheetId = randomUUID();
       const image = await attach(sheet.buffer, sheet.width, sheet.height, 'contact-sheet.png');
@@ -92,7 +95,7 @@ export function contactTools(ctx) {
       });
       return { sheetId, image, cells: sheet.cells, imageTokenBudget: CONTACT_IMAGE_BUDGET,
         estimatedDshImageTokens: imageTokens(sheet.width, sheet.height) };
-    },
+    }),
   }, {
     name: 'storyboard_inspect_detail',
     description: 'Only when a specific contact-sheet cell needs a close look, return its single high-resolution crop.',
