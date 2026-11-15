@@ -25,6 +25,7 @@
 
 // 四个视频识别工具各自的注册入口：契约、handler、注册都在 src/storyboard/ 里。
 import { storyboardTools } from './storyboard/register.js';
+import { composeSheet, drawGlyphs, encodePngBuffer, fillRect } from './storyboard/sheet.js';
 
 export const name = 'dsh-video-storyboard';
 export const inject = ['tools', 'attachments'];
@@ -75,6 +76,8 @@ async function registerAll(ctx) {
   // 撞上 const 的暂时性死区，抛 ReferenceError，又被下面的 catch 静默吞掉 ——
   // 工具注册成功了，解绑函数却从来没登记过（插件卸载时不会解绑，而且没人知道出过错）。
   const disposers = [];
+  const removeSheet = ctx.provide?.('contactSheet', Object.freeze({ composeSheet, drawGlyphs, encodePngBuffer, fillRect }));
+  if (typeof removeSheet === 'function') disposers.push(removeSheet);
   disposers.push(...tools.map((tool) => ctx.tools.register(tool)));
   return () => {
     for (const dispose of disposers.reverse()) dispose?.();
