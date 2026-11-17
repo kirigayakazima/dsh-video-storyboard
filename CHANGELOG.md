@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.6-dsha]
+
+- `audioStrip` defaults to `auto` for storyboard and zoom. Inaudible tracks are reported without a footer. `on` uses an absolute −48 dBFS floor, and `off` hides the footer.
+- Constrain adjacent frame candidates and anchor short, uncut clips around evenly spaced centers. The strongest late fingerprint change can replace one center sample when spacing allows.
+- Cap portrait output at 896 pixels per side, including the audio footer.
+
 ## [Unreleased]
 
 ### Fixed

@@ -7,6 +7,79 @@
 
 import { extractFrameRaw, extractSharpest, tileSubFrames } from './sheet.js';
 
+const CENTER_RADIUS = 0.35;
+
+/** Independent seek windows whose candidates cannot crowd adjacent cells. */
+export function samplingWindows(cells, { anchored = false, pick = 'sharp', frameRate = 0, prints, fps, printOffset = 0 } = {}) {
+  if (!cells.length || (cells.length === 1 && !anchored)) return cells.map(() => undefined);
+  const frame = frameRate > 0 ? 1 / frameRate : 0;
+  const ranges = cells.map(({ a, b }) => {
+    const middle = (a + b) / 2;
+    return { min: a, max: Math.max(middle, b - frame), middle };
+  });
+  const bounds = ranges.map(({ min, max, middle }) => anchored
+    ? { min: Math.max(min, middle - CENTER_RADIUS), max: Math.min(max, middle + CENTER_RADIUS), middle }
+    : { min, max, middle });
+  const duration = cells.at(-1).b - cells[0].a;
+  const desiredGap = Math.max(1.2, duration / (cells.length * 1.5));
+  function centersFor(gap) {
+    const latest = [];
+    for (let i = bounds.length - 1; i >= 0; i--) {
+      latest[i] = Math.min(bounds[i].max, (latest[i + 1] ?? Infinity) - gap);
+      if (latest[i] + 1e-8 < bounds[i].min) return null;
+    }
+    const centers = [];
+    for (const [i, { min, middle }] of bounds.entries()) {
+      centers.push(Math.max(min, Math.min(middle, latest[i]), (centers[i - 1] ?? -Infinity) + gap));
+    }
+    return centers;
+  }
+  let gap = desiredGap + frame;
+  let centers = centersFor(gap);
+  if (!centers) {
+    gap = 1.2 + frame;
+    centers = centersFor(gap);
+  }
+  if (!centers) {
+    // Very short or irregular shot layouts can make 1.2 seconds impossible.
+    // Preserve their coverage, while maximizing the feasible separation.
+    let lo = 0;
+    let hi = gap;
+    while (hi - lo > 0.001) {
+      const mid = (lo + hi) / 2;
+      if (centersFor(mid)) lo = mid;
+      else hi = mid;
+    }
+    gap = lo;
+    centers = centersFor(gap);
+  }
+  if (anchored && pick === 'sharp' && prints?.length && fps > 0) {
+    const baseline = prints[Math.round((centers[0] - printOffset) * fps)];
+    let peak = null;
+    if (baseline?.length) {
+      for (let i = Math.max(1, Math.floor(cells.length / 2)); i < cells.length; i++) {
+        const min = Math.max(ranges[i].min, bounds[i - 1].max + gap);
+        const max = Math.min(ranges[i].max, (bounds[i + 1]?.min ?? Infinity) - gap);
+        for (let j = Math.max(0, Math.ceil((min - printOffset) * fps)); j <= Math.floor((max - printOffset) * fps) && j < prints.length; j++) {
+          if (prints[j]?.length !== baseline.length) continue;
+          let difference = 0;
+          for (let p = 0; p < baseline.length; p++) difference += Math.abs(prints[j][p] - baseline[p]);
+          if (difference > (peak?.difference ?? 0)) peak = { i, at: printOffset + j / fps, difference };
+        }
+      }
+    }
+    if (peak) {
+      centers[peak.i] = peak.at;
+      bounds[peak.i] = { min: peak.at, max: peak.at };
+    }
+  }
+  return centers.map((center, i) => ({
+    from: Math.max(bounds[i].min, (center + (centers[i - 1] ?? -Infinity) + gap) / 2),
+    to: Math.min(bounds[i].max, (center + (centers[i + 1] ?? Infinity) - gap) / 2),
+    center,
+  }));
+}
+
 /**
  * 取一帧：有高清直链就先走远程，失败回落本地低清。
  *
@@ -14,13 +87,17 @@ import { extractFrameRaw, extractSharpest, tileSubFrames } from './sheet.js';
  * 6 格就是 20 秒以上；而 zoom 的窗口本来就短、格间距小，段中点足够代表。
  * 本地文件仍然用 3 候选（0.35 s/次，几乎免费，且段内可能有转场帧）。
  */
-export async function extractFrameWithFallback({ input, remote, at, dur, cellW, cellH, ffmpegPath, pick }) {
+export async function extractFrameWithFallback({ input, remote, at, dur, cellW, cellH, ffmpegPath, pick, window }) {
   const grab = (src, http, candidates) => {
     if (pick === 'sharp') {
-      return extractSharpest({ input: src, at, dur, cellW, cellH, ffmpegPath, http, candidates });
+      const seek = window ? { at: window.from, dur: Math.max(0, window.to - window.from), margin: 0,
+        reportPts: true, minSeek: window.from } : { at, dur };
+      return extractSharpest({ input: src, cellW, cellH, ffmpegPath, http, candidates, ...seek });
     }
+    const seek = window ? (pick === 'thumb' ? { at: window.from, dur: Math.max(0, window.to - window.from) }
+      : { at: window.center, reportPts: true }) : { at, dur };
     return extractFrameRaw({
-      input: src, at, dur, cellW, cellH, ffmpegPath, http,
+      input: src, cellW, cellH, ffmpegPath, http, ...seek, minSeek: window?.from,
       mode: pick === 'thumb' ? 'thumb' : 'mid',
     });
   };

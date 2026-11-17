@@ -49,7 +49,7 @@ export function cacheDir(env = process.env) {
  * 缓存键：路径 + 大小 + mtime + 窗口 + 阈值模式。
  * 不用文件内容 hash —— 2GB 的文件读一遍比重新扫描还慢。
  */
-export async function cacheKey({ input, start, end, threshold }) {
+export async function cacheKey({ input, start, end, threshold, profile }) {
   let size = 0;
   let mtime = 0;
   try {
@@ -59,7 +59,7 @@ export async function cacheKey({ input, start, end, threshold }) {
   } catch {
     return null;                                  // 文件不可读就不缓存
   }
-  const raw = [CACHE_VERSION, input, size, mtime, start ?? 0, end ?? 'eof', String(threshold)].join('|');
+  const raw = [CACHE_VERSION, input, size, mtime, start ?? 0, end ?? 'eof', String(threshold), ...(profile ? [profile] : [])].join('|');
   return createHash('sha1').update(raw).digest('hex').slice(0, 20);
 }
 

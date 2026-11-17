@@ -12,6 +12,14 @@ import { DEFAULT_FFMPEG } from './probe.js';
 export const LUFS_FLOOR = -70;      // 低于这个值当静音（ebur128 静音输出 -120 左右）
 export const SILENCE_DB = -40;
 export const SILENCE_MIN = 0.6;
+export const AUDIBLE_PEAK_THRESHOLD = -32;
+export const AUDIBLE_MEAN_THRESHOLD = -48;
+
+export function isAudibleAudio(audio) {
+  // Momentary loudness ignores sample-level spikes that cannot sustain a sound.
+  return Boolean(audio?.samples > 0 &&
+    (audio.peak >= AUDIBLE_PEAK_THRESHOLD || audio.mean >= AUDIBLE_MEAN_THRESHOLD));
+}
 
 /** 跑一次 ffmpeg，收集 stderr（ebur128 / silencedetect 都往 stderr 打） */
 function runAudioFilter({ input, ffmpegPath, filter, start, end, timeoutMs = 180_000 }) {
@@ -35,6 +43,7 @@ function runAudioFilter({ input, ffmpegPath, filter, start, end, timeoutMs = 180
 }
 
 const M_RE = /lavfi\.r128\.M=(-?[0-9.]+)/g;
+const RMS_RE = /lavfi\.astats\.Overall\.RMS_level=(-?[0-9.]+|-inf)/g;
 
 /**
  * 瞬时响度曲线（EBU R128 momentary，约每 100ms 一个点）。
@@ -43,7 +52,9 @@ const M_RE = /lavfi\.r128\.M=(-?[0-9.]+)/g;
 export async function measureLoudness({ input, ffmpegPath = DEFAULT_FFMPEG, start = 0, end } = {}) {
   const stderr = await runAudioFilter({
     input, ffmpegPath, start, end,
-    filter: 'ebur128=metadata=1,ametadata=mode=print:key=lavfi.r128.M',
+    filter: 'ebur128=metadata=1,ametadata=mode=print:key=lavfi.r128.M,' +
+      'astats=metadata=1:reset=1:measure_perchannel=none:measure_overall=RMS_level,' +
+      'ametadata=mode=print:key=lavfi.astats.Overall.RMS_level,volumedetect',
   });
   const series = [];
   for (const m of stderr.matchAll(M_RE)) {
@@ -55,9 +66,12 @@ export async function measureLoudness({ input, ffmpegPath = DEFAULT_FFMPEG, star
   const peak = audible.length ? Math.max(...audible) : LUFS_FLOOR;
   return {
     series,
+    envelope: { series: [...stderr.matchAll(RMS_RE)].map((m) => m[1] === '-inf' ? -120 : Number(m[1])), step: 0.1 },
     step: 0.1,
     mean: +mean.toFixed(1),
     peak: +peak.toFixed(1),
+    mean_volume_db: Number(stderr.match(/mean_volume: (-?[\d.]+) dB/)?.[1]),
+    peak_volume_db: Number(stderr.match(/max_volume: (-?[\d.]+) dB/)?.[1]),
     dynamic: +(peak - (audible.length ? Math.min(...audible) : LUFS_FLOOR)).toFixed(1),
     samples: series.length,
   };
@@ -173,8 +187,6 @@ export const MOD_FPS = 25;          // 调制分析的帧率（Hz）
 export const MOD_FRAME = 320;       // 每帧采样数：8000 / 25 = 320 → 40ms 一帧
 export const MOD_BAND = [3, 6];     // 音节/节拍带（Hz）
 export const MOD_SLOW = [0.5, 2];   // 短语级的慢起伏（Hz）
-
-const RMS_RE = /lavfi\.astats\.Overall\.RMS_level=(-?[0-9.]+|-inf)/g;
 
 /**
  * 取一条**够细**的能量包络（dB），供节奏分析用。

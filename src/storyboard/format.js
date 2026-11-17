@@ -56,7 +56,20 @@ export function buildEvidence(result) {
     size: result.info ? `${result.info.width}x${result.info.height}` : null,
     cells_total: cells.length,
     cuts_total: result.cuts?.length ?? 0,
+    ...(result.audio?.present && { audio: audioEvidence(result.audio) }),
     cells,
+  };
+}
+
+export function audioEvidence(audio) {
+  return {
+    present: audio.present === true,
+    audible: audio.audible ?? null,
+    mean_volume_db: Number.isFinite(audio.mean_volume_db) ? audio.mean_volume_db : null,
+    peak_volume_db: Number.isFinite(audio.peak_volume_db) ? audio.peak_volume_db : null,
+    mean_lufs: Number.isFinite(audio.mean) ? audio.mean : null,
+    peak_momentary_lufs: Number.isFinite(audio.peak) ? audio.peak : null,
+    strip: audio.strip,
   };
 }
 
@@ -458,7 +471,7 @@ export function formatManifest(result, {
       `${cellAttr}${tokensAttr}` +
       `${result.provenance?.ffmpeg ? ` ffmpeg="${result.provenance.ffmpeg}"` : ''}` +
       `${result.provenance?.sha256 ? ` sha256="${result.provenance.sha256}"` : ''}` +
-      `${result.audio ? ` footer="audio-strip(${sheet0.stripH ?? 0}px)"` : ''}` +
+      `${sheet0?.stripH ? ` footer="audio-strip(${sheet0.stripH}px)"` : ''}` +
       `${result.transcript?.source ? ` transcript="${result.transcript.source}"` : ''}` +
       (cellRange ? ` cells="${lo}-${hi} of ${total}"` : '') +
       (result.cuts?.length
@@ -528,9 +541,13 @@ export function formatManifest(result, {
       `source=${suspect[0].source ?? 'unknown'}; quote=${JSON.stringify(suspect[0].quote)}` +
       (suspect.length > 1 ? ' (+more; see transcript.suspectInjection in the JSON manifest)' : ''));
   }
-  if (result.audio) {
+  if (result.audio && sheet0?.stripH) {
     lines.push('footer strip shares the timeline: teal bars = loudness (taller = louder), ' +
       'grey blocks = silence, yellow ticks = cut points.');
+  }
+  if (result.audio?.strip === 'suppressed_inaudible') {
+    lines.push(`audio: track present, below the audible gate; strip=suppressed_inaudible ` +
+      `(mean ${result.audio.mean} LUFS, momentary peak ${result.audio.peak} LUFS).`);
   }
   // 这一句专治"把格的起点当画面时刻"：标题板常常出现在格的中后段，
   // 不给 frame@ 的话，模型会以为格首就是标题板，整段判断提前几十秒。

@@ -160,6 +160,7 @@ export function boardOptions(args = {}, { kind = 'board', frameSource = null } =
     to: args.to ?? 0,
     pick: args.pick ?? 'sharp',
     burn: args.burn ?? 'index',
+    audioStrip: args.audioStrip ?? 'auto',
     transcript: args.transcript ?? 'auto',
     ...(args.transcriptFile !== undefined ? { transcriptFile: args.transcriptFile } : {}),
     sourceHash: args.sourceHash === true,

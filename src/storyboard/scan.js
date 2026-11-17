@@ -107,9 +107,9 @@ export const PRINT_FPS = 8;
  * @param {Uint8Array[]} prints 逐帧 16×9
  * @param {number} fps 原视频帧率
  */
-export function packPrints(prints, fps) {
+export function packPrints(prints, fps, targetFps = PRINT_FPS) {
   if (!Array.isArray(prints) || prints.length === 0) return null;
-  const step = Math.max(1, Math.round((fps || 25) / PRINT_FPS));
+  const step = Math.max(1, Math.round((fps || 25) / (targetFps || PRINT_FPS)));
   const kept = [];
   for (let i = 0; i < prints.length; i += step) {
     if (prints[i]?.length === FP_W * FP_H) kept.push(prints[i]);

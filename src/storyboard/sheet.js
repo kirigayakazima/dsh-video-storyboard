@@ -21,6 +21,7 @@ export const PAD_GLYPH = [110, 110, 116];
 export const BADGE_BG = [0, 0, 0];
 export const BADGE_FG = [255, 235, 59];
 export const GUTTER = 4;
+export const PORTRAIT_MAX_DIM = 896;
 export const BADGE_ALPHA = 0.85;
 
 /** 5×7 点阵，只有 0-9。scale 必须是整数，保证放大后边缘锐利。 */
@@ -44,9 +45,10 @@ export const DIGIT_H = 7;
  * 画布尺寸：整图面积 <= budget，格宽高按剩余空间均分。
  * @returns {{width:number,height:number,cellW:number,cellH:number}}
  */
-export function layoutCanvas(cols, rows, cellAspect, budget = 640_000, gutter = GUTTER) {
+export function layoutCanvas(cols, rows, cellAspect, budget = 640_000, gutter = GUTTER,
+  maxDim = cellAspect < 1 ? PORTRAIT_MAX_DIM : Infinity) {
   const aspect = (cols * cellAspect) / rows;
-  const gw = Math.sqrt(budget * aspect);
+  const gw = Math.min(Math.sqrt(budget * aspect), maxDim, maxDim * aspect);
   const gh = gw / aspect;
   const cellW = Math.max(1, Math.floor((gw - gutter * (cols + 1)) / cols));
   const cellH = Math.max(1, Math.floor((gh - gutter * (rows + 1)) / rows));
@@ -153,11 +155,11 @@ export function drawPadding(buf, width, height, x, y, cellW, cellH) {
 export function composeSheet(opts) {
   const {
     frames, cols, rows, cellAspect, budget = 640_000, gutter = GUTTER,
-    burn = 'index', badgeRatio = 0.18,
+    burn = 'index', badgeRatio = 0.18, maxDim,
   } = opts;
   if (!Array.isArray(frames)) throw new TypeError('frames must be an array');
   if (frames.length > cols * rows) throw new RangeError('more frames than cells');
-  const { width, height, cellW, cellH } = layoutCanvas(cols, rows, cellAspect, budget, gutter);
+  const { width, height, cellW, cellH } = layoutCanvas(cols, rows, cellAspect, budget, gutter, maxDim);
   const buf = Buffer.alloc(width * height * 3);
   for (let i = 0; i < buf.length; i += 3) {
     buf[i] = BACKGROUND[0]; buf[i + 1] = BACKGROUND[1]; buf[i + 2] = BACKGROUND[2];
@@ -239,6 +241,11 @@ export const STRIP_BAR = [63, 184, 175];
 export const STRIP_SILENCE = [42, 42, 46];
 export const STRIP_TICK = [255, 235, 59];
 export const STRIP_SEP = [60, 60, 66];
+export const AUDIO_STRIP_FLOOR = -48;
+
+export function audioStripHeight(width, cellH) {
+  return Math.max(24, Math.min(Math.round(width * 0.055), Math.round(cellH * 0.28)));
+}
 
 /**
  * 在画布底部接一条音频带：响度包络（越高越响）+ 静音块 + 切点刻度。
@@ -283,20 +290,15 @@ export function addAudioStrip(sheet, opts) {
 
   // 响度包络：按列聚合，避免 600 列里丢细节
   if (series.length > 0) {
-    const audible = series.filter((v) => v > -70);
-    const sorted = [...audible].sort((a, b) => a - b);
-    // 参照下限至少取到 hi-12dB：否则「全程恒定响度」的素材（如测试音、压得很平的成片）
-    // 会被归一化成一条几乎贴底的细线，看起来像坏了。
-    const hi = sorted[Math.floor(sorted.length * 0.97)] ?? -10;
-    const lo = Math.min(sorted[Math.floor(sorted.length * 0.1)] ?? -60, hi - 12);
-    const range = Math.max(6, hi - lo);
+    const sorted = series.filter(Number.isFinite).sort((a, b) => a - b);
+    const hi = Math.max(-16, sorted[Math.floor(sorted.length * 0.97)] ?? -16);
     for (let x = 0; x < width; x++) {
       const t0 = win.from + (x / width) * span;
       const i0 = Math.max(0, Math.floor((t0 - win.from) / step));
-      const i1 = Math.max(i0 + 1, Math.min(series.length, Math.ceil(((t0 - win.from) + span / width) / step)));
+      const i1 = Math.min(series.length, Math.max(i0 + 1, Math.ceil(((t0 - win.from) + span / width) / step)));
       let peak = -120;
       for (let i = i0; i < i1; i++) peak = Math.max(peak, series[i]);
-      const norm = Math.max(0, Math.min(1, (peak - lo) / range));
+      const norm = Math.max(0, Math.min(1, (peak - AUDIO_STRIP_FLOOR) / (hi - AUDIO_STRIP_FLOOR)));
       const barH = Math.round(norm * (stripH - 4));
       for (let y = 0; y < barH; y++) {
         const py = height + stripH - 1 - y;
@@ -320,6 +322,10 @@ export function addAudioStrip(sheet, opts) {
   for (let x = 0; x < width; x++) {
     const i = (height * width + x) * 3;
     out[i] = STRIP_SEP[0]; out[i + 1] = STRIP_SEP[1]; out[i + 2] = STRIP_SEP[2];
+  }
+  // Small level ticks identify the footer as a chart, even for a flat signal.
+  for (let y = height + 3; y < height + stripH - 1; y += 5) {
+    fillRect(out, width, height + stripH, 0, y, 4, 1, STRIP_SEP);
   }
 
   return { buffer: out, width, height: height + stripH, stripH };
@@ -366,7 +372,7 @@ export function sharpness(buf, width, height) {
 export async function extractSharpest(opts) {
   const {
     input, at, dur, cellW, cellH, ffmpegPath = DEFAULT_FFMPEG,
-    candidates = 3, margin = 0.25, timeoutMs, http,
+    candidates = 3, margin = 0.25, timeoutMs, http, reportPts, minSeek,
   } = opts;
   const safeDur = Math.max(0, dur || 0);
   const pad = Math.min(margin, safeDur / 3);
@@ -380,7 +386,7 @@ export async function extractSharpest(opts) {
   // 截断录制里末尾候选会越界（ffmpeg exit 0 + stdout 0 字节）。不能因为一个候选失败
   // 就丢掉另外两个可解候选 —— 一次失败会让整张分镜归零（issue #30）。
   const settled = await Promise.allSettled(times.map((t) =>
-    extractFrameRaw({ input, at: t, cellW, cellH, ffmpegPath, timeoutMs, http })
+    extractFrameRaw({ input, at: t, cellW, cellH, ffmpegPath, timeoutMs, http, reportPts, minSeek })
       .then((f) => ({ ...f, sharp: sharpness(f.buffer, cellW, cellH) }))));
   const picked = settled.filter((s) => s.status === 'fulfilled').map((s) => s.value);
   if (picked.length === 0) {
@@ -439,7 +445,7 @@ export function httpInputArgs(input, http) {
  */
 export async function extractFrameRaw(opts) {
   const {
-    input, at, dur, cellW, cellH, ffmpegPath = DEFAULT_FFMPEG, mode = 'mid', timeoutMs, http, reportPts = false,
+    input, at, dur, cellW, cellH, ffmpegPath = DEFAULT_FFMPEG, mode = 'mid', timeoutMs, http, reportPts = false, minSeek = 0,
   } = opts;
   const filter = coverFilter(cellW, cellH);
   const netArgs = httpInputArgs(input, http);
@@ -449,7 +455,7 @@ export async function extractFrameRaw(opts) {
   // 向段起点方向退几步再试，别让一格取不到帧拖垮整张图（issue #30）。
   let last = { seek: baseSeek, length: 0 };
   for (let attempt = 0; attempt <= 3; attempt += 1) {
-    const seek = Math.max(0, baseSeek - attempt * 0.5);
+    const seek = Math.max(minSeek, baseSeek - attempt * 0.5);
     if (attempt > 0 && seek === last.seek) break;
     let args;
     if (mode === 'thumb' && dur > 0) {

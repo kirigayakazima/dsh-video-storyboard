@@ -151,6 +151,10 @@ export function storyboardToolSpec() {
           'about "how many different shots did I see" than "can I read the on-screen text". Tiling is ' +
           'skipped entirely when cells:1, so a single-cell request really returns one frame.',
       },
+      audioStrip: {
+        type: 'string', enum: ['auto', 'on', 'off'],
+        description: 'Default "auto": draw the audio timeline only when the track has audible content. "on" draws it even for silence; "off" hides it.',
+      },
       transcript: {
         type: 'string',
         enum: ['auto', 'off'],
@@ -312,6 +316,10 @@ export function zoomToolSpec() {
         type: 'string',
         enum: ['index', 'none'],
         description: 'What to burn into each cell. Default "index".',
+      },
+      audioStrip: {
+        type: 'string', enum: ['auto', 'on', 'off'],
+        description: 'Controls the audio timeline. Defaults to "auto"; use "on" to force it or "off" to hide it.',
       },
       transcript: {
         type: 'string',

@@ -34,7 +34,7 @@ import {
 // 一张图会产生多少帧，切张与渲染共用同一个答案（见 measure.js 顶部说明）
 import { measureGroup } from './measure.js';
 import { remember } from './memory.js';
-import { analyzeAudio, analyzeRhythm, describeAudio, detectOnsets } from './audio.js';
+import { analyzeAudio, analyzeRhythm, describeAudio, detectOnsets, isAudibleAudio } from './audio.js';
 import {
   alignCells, applyTermMap, asrBackendId, canTranscribe, describeAsrTarget, explainFetchError,
   extractSubtitleTrack, filterSuspectSegments, resolveAsrConfig, speechCurve, transcribeLong,
@@ -45,8 +45,8 @@ import { pruneStorage } from './storage.js';
 import { saveCells } from './cells.js';
 import { ffmpegVersion, sha256File } from './provenance.js';
 import { findInjection } from './injection.js';
-import { addAudioStrip, composeSheet, encodePngBuffer } from './sheet.js';
-import { extractFrameWithFallback, extractSubTile, mapPool } from './frames.js';
+import { addAudioStrip, audioStripHeight, composeSheet, encodePngBuffer } from './sheet.js';
+import { extractFrameWithFallback, extractSubTile, mapPool, samplingWindows } from './frames.js';
 import { correctByOnScreenSubs } from './ocr-subs.js';
 import { countTextInSilence } from './format.js';
 
@@ -128,7 +128,7 @@ export async function runStoryboard(opts) {
     sourceHash = false,
     frameSource = null,
     fetchOptions = null,
-    audioStrip = true,
+    audioStrip = 'auto',
     asrMaxChunk = 45,
     // 热词按**这一次**覆盖全局：材料视频该传「位错 滑移 柏氏矢量」，口播摄影片传「像差 焦段」。
     // 全局 asr.json 里的那份是默认值，不是铁律 —— 学科不对时它对识别是负偏置。
@@ -164,6 +164,8 @@ export async function runStoryboard(opts) {
   if (!inputRaw) throw new Error('input is required');
   if (!PICK_MODES.includes(pick)) throw new RangeError(`pick must be one of ${PICK_MODES.join('/')}`);
   if (!BURN_MODES.includes(burn)) throw new RangeError(`burn must be one of ${BURN_MODES.join('/')}`);
+  const audioStripMode = audioStrip === true ? 'on' : audioStrip === false ? 'off' : audioStrip;
+  if (!['auto', 'on', 'off'].includes(audioStripMode)) throw new RangeError('audioStrip must be auto, on or off');
 
   // 链接在这里变成一份本地文件；本地路径原样返回（source 为 null）。
   // 后面的所有阶段都只面对 input，不知道它原来是不是个 URL。
@@ -220,11 +222,15 @@ export async function runStoryboard(opts) {
   const mark = (name) => { timing[name] = ((Date.now() - _t) / 1000); _t = Date.now(); };
 
   // ---- 音频测量（零模型：响度 + 静音）。先做，因为静音位置要用来切 ASR 请求。
-  const needAudio = info.hasAudio && !textOnly && (audioStrip !== false || transcript !== 'off');
+  const needAudio = info.hasAudio && !textOnly && (audioStripMode !== 'off' || transcript !== 'off');
   const audio = needAudio
     ? await analyzeAudio({ input, ffmpegPath, start: winStart, end: winStart + winDur })
     : null;
-  const stripAudio = audioStrip !== false ? audio : null;
+  const audible = audio?.samples > 0 ? isAudibleAudio(audio) : null;
+  const stripAudio = info.hasAudio && !textOnly && (audioStripMode === 'on' || (audioStripMode === 'auto' && audible))
+    ? audio ?? { series: [], silences: [] } : null;
+  const stripState = stripAudio ? 'drawn' : audioStripMode === 'off' ? 'off'
+    : audible === false ? 'suppressed_inaudible' : 'unavailable';
   const silences = audio?.silences ?? [];
   // 声音事件：突然变响/突然安静。画面没动但事情发生的时刻，只能靠它抓到。
   // 口播片里"每句话的停顿"都会触发，所以**只用最突出的若干个**参与格位加权
@@ -393,7 +399,8 @@ export async function runStoryboard(opts) {
   })();
 
   // 扫描结果按 (文件, 窗口, 阈值策略) 缓存：storyboard 之后的 zoom 能直接复用
-  const key = cache ? await cacheKey({ input, start: winStart, end: winStart + winDur, threshold }) : null;
+  const key = cache ? await cacheKey({ input, start: winStart, end: winStart + winDur, threshold,
+    profile: winDur <= 15 ? 'short-full-fps' : undefined }) : null;
   // precomputed：批量模式下全片已经扫过一次，窗口直接复用那份切点与摘要，
   // 不再为每个窗口重新解码一遍（2 小时的片子能省掉 24 次重复扫描）。
   // 逐帧指纹只在"真的扫了"的那一次里拿得到（缓存存不下 Uint8Array），
@@ -431,7 +438,7 @@ export async function runStoryboard(opts) {
         cuts: s.cuts, stats: s.stats, frames: s.frames,
         threshold: s.threshold, degraded: s.degraded, summary: s.summary,
         darkRuns: detectDarkRuns(s.means, { fps: info.fps }),
-        printPack: s.prints?.length ? packPrints(s.prints, info.fps) : null,
+        printPack: s.prints?.length ? packPrints(s.prints, info.fps, winDur <= 15 ? info.fps : undefined) : null,
       };
     }, { enabled: cache });
   // 三个来源收口成一份：真扫（内存里已有）> 缓存读回（解包）> precomputed（batch，整片坐标）
@@ -664,6 +671,11 @@ export async function runStoryboard(opts) {
     .filter((r) => r.to - r.from >= 2 && r.from < winDur);
   // 按给定总格数排一遍 → 返回 [{from,to,density,dark}]。抽成函数是为了能"补满后重排一次"。
   const planRanges = (total) => {
+    if (cuts.length === 0 && winDur <= 15) {
+      const count = Math.min(total, Math.max(1, Math.floor(winDur / 1.2)));
+      return segmentsFromCuts(winDur, Array.from({ length: count - 1 }, (_, i) => winStart + (i + 1) * winDur / count), 0, winStart)
+        .map(([from, to]) => ({ from, to, density: 1 }));
+    }
     // **近乎静止的素材不吃"变化量"这套**。
     // rodt / 积分采样点的前提是"变化多的地方更值得看"，可当整片 p90 < 1（讲义、监控、
     // 固定机位口播）时，切点集中在少数几页翻页动画上，按密度分格就会把格位堆在那几页，
@@ -820,7 +832,7 @@ export async function runStoryboard(opts) {
   // offset 必须是窗口起点：prints[0] 对应 winStart，而 cell 的 from/to 是绝对时间。
   // fps 必须用 printFps（抽稀后可能是 info.fps/3）—— 用原 fps 去寻址抽稀序列会越界，
   // frameDiv 会整片变成 null，而现象是"判据悄悄失效"，很难查。
-  const printCtx = { prints: scanPrints, fps: printFps || info.fps, printOffset: winStart };
+  const printCtx = { prints: scanPrints, fps: printFps || info.fps, printOffset: scan.printsRaw ? 0 : winStart };
   const splitSheets = (ranges) => {
     if (Number(opts.sheets) > 0) {
       // 调用方显式指定了张数（测试、批量脚本）就尊重它，仍按格数均分
@@ -962,7 +974,7 @@ export async function runStoryboard(opts) {
     });
     // cellBudget 也要用 measure 那个：composeSheet 与 layoutCanvas 必须是同一个预算，
     // 差 10% 会让取帧尺寸和拼图尺寸不一致（图会变成斜条纹）。
-    const { cols, rows, width, height, cellW, cellH, cellBudget } = measured;
+    const { cols, rows, width, cellW, cellH, cellBudget, maxDim } = measured;
     const aligned = alignCells(group, transcriptInfo?.segments ?? []);
     const frames = [];
     const cellMeta = [];
@@ -973,9 +985,12 @@ export async function runStoryboard(opts) {
       gi, a: c.from, b: c.to, cellCuts: c.cellCuts,
       cutTimes: c.cutTimes, sub: c.k, want: c.want, rate: c.rate,
     }));
+    const windows = samplingWindows(plan, {
+      anchored: cuts.length === 0 && winDur <= 15, pick, frameRate: info.fps, ...printCtx,
+    });
 
     const _ex0 = Date.now();
-    const shots = await mapPool(plan, frameConcurrency, async ({ a, b, sub, cutTimes }) => {
+    const shots = await mapPool(plan, frameConcurrency, async ({ a, b, sub, cutTimes }, gi) => {
       if (sub > 1) {
         // 快闪格：摊成 k×k，一张图交代 k² 个瞬间（token 不变）
         return extractSubTile({
@@ -984,9 +999,13 @@ export async function runStoryboard(opts) {
         });
       }
       return extractFrameWithFallback({
-        input, remote: remoteFrame, at: a, dur: b - a, cellW, cellH, ffmpegPath, pick,
+        input, remote: remoteFrame, at: a, dur: b - a, cellW, cellH, ffmpegPath, pick, window: windows[gi],
       });
     });
+
+    if (shots.some((shot, i) => i > 0 && plan[i].sub === 1 && plan[i - 1].sub === 1 && shot.t - shots[i - 1].t < 1.1995)) {
+      trace.push(`sampling-gap-limited:sheet-${si + 1}`);
+    }
 
     timing.extract = (timing.extract ?? 0) + (Date.now() - _ex0) / 1000;
     for (const [ki, { gi, a, b, cellCuts, sub }] of plan.entries()) {
@@ -1019,14 +1038,14 @@ export async function runStoryboard(opts) {
       });
     }
     let sheet = composeSheet({
-      frames, cols, rows, cellAspect: info.aspect, budget: cellBudget, burn, badgeRatio,
+      frames, cols, rows, cellAspect: info.aspect, budget: cellBudget, burn, badgeRatio, maxDim,
     });
     if (stripAudio) {
       // 条带高度按"宽的 5.5%"会在大长条上失控（2476px 宽 → 136px 高，占掉 37% 画面），
       // 所以同时受格高的 40% 约束。
-      const stripH = Math.max(24, Math.min(Math.round(width * 0.055), Math.round(cellH * 0.28)));
+      const stripH = audioStripHeight(width, cellH);
       sheet = addAudioStrip(sheet, {
-        loudness: stripAudio, silences: stripAudio.silences, cuts: cuts.map((c) => c.t),
+        loudness: stripAudio.envelope ?? stripAudio, silences: stripAudio.silences, cuts: cuts.map((c) => c.t),
         window: { from: winStart, to: winStart + winDur }, stripH,
       });
     }
@@ -1080,11 +1099,12 @@ export async function runStoryboard(opts) {
     ...(refinedBursts.length ? { refinedBursts } : {}),
     // 有高清直链却有格子落了回来 —— 要报，否则"这格怎么这么糊"没有解释
     ...(fallbacks > 0 ? { frameFallbacks: fallbacks } : {}),
-    audio: stripAudio
+    audio: info.hasAudio
       ? {
-        ...stripAudio,
+        ...audio,
+        present: true, audible, strip: stripState,
         events: allEvents,
-        summary: describeAudio(stripAudio, winDur),
+        summary: audio ? describeAudio(audio, winDur) : 'audio track present; loudness not measured',
       }
       : null,
     transcript: transcriptInfo

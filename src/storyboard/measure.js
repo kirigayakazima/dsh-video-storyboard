@@ -19,7 +19,7 @@
  */
 
 import { NEED_TIERS, bestLayout } from './plan.js';
-import { layoutCanvas } from './sheet.js';
+import { audioStripHeight, GUTTER, layoutCanvas, PORTRAIT_MAX_DIM } from './sheet.js';
 import {
   BUSY_MOTION, FRAME_DIV_MID, TILE_MOTION, chooseSubGrid, subTileTimes,
 } from './frames.js';
@@ -173,7 +173,11 @@ export function measureGroup(ranges, {
   // 有音频带时先扣掉条带占用的预算：layoutCanvas 与 composeSheet 必须用**同一个** budget，
   // 否则取帧尺寸和拼图尺寸不一致，图会变成斜条纹（踩过）
   const cellBudget = audioStrip ? Math.round(budget * 0.9) : budget;
-  const { width, height, cellW, cellH } = layoutCanvas(cols, rows, aspect, cellBudget);
+  const initial = layoutCanvas(cols, rows, aspect, cellBudget);
+  const maxDim = audioStrip && aspect < 1 && initial.height + audioStripHeight(initial.width, initial.cellH) > PORTRAIT_MAX_DIM
+    ? PORTRAIT_MAX_DIM - audioStripHeight(initial.width, initial.cellH) : undefined;
+  const { width, height, cellW, cellH } = maxDim === undefined ? initial
+    : layoutCanvas(cols, rows, aspect, cellBudget, GUTTER, maxDim);
 
   const cells = ranges.map((range) => {
     const { cutList, marks, cutScore, meanMotion, cutTimes, frameDiv } = cellSignals(
@@ -211,5 +215,5 @@ export function measureGroup(ranges, {
   });
   shrinkToBudget(cells, subBudget);
   const frameCount = cells.reduce((sum, c) => sum + c.k * c.k, 0);
-  return { cols, rows, width, height, cellW, cellH, cellBudget, cells, frameCount };
+  return { cols, rows, width, height, cellW, cellH, cellBudget, maxDim, cells, frameCount };
 }

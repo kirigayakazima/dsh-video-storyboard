@@ -6,7 +6,7 @@
  *                                   [--segment 300] [--need scene] [--budget 1200000]
  *                                   [--pick sharp|mid|thumb] [--burn index|none]
  *                                   [--threshold auto|15] [--min-gap 1.2]
- *                                   [--transcript auto|off] [--no-adaptive] [--badge 0.15]
+ *                                   [--transcript auto|off] [--audio-strip auto|on|off] [--no-adaptive] [--badge 0.15]
  *                                   [--out sheet.png] [--manifest m.json] [--plan 300] [--text]
  */
 import { writeFile } from 'node:fs/promises';
@@ -14,6 +14,7 @@ import { writeFile } from 'node:fs/promises';
 import { args as parse } from './_args.mjs';
 import { probeVideo } from '../src/storyboard/probe.js';
 import { planWindows } from '../src/storyboard/plan.js';
+import { audioEvidence, buildEvidence } from '../src/storyboard/format.js';
 import { isHttpUrl } from '../src/storyboard/url.js';
 import { resolveInput } from '../src/storyboard/fetch.js';
 import {
@@ -24,6 +25,7 @@ import { QUALITY_HEIGHTS, SIZE_BUDGETS, boardGeometry } from '../src/storyboard/
 const opt = parse(process.argv.slice(2), {
   cells: 0, sheets: 0, from: 0, to: 0, threshold: 'auto', 'min-gap': 1.2,
   pick: 'sharp', burn: 'index', badge: 0.15, transcript: 'auto',
+  'audio-strip': 'auto',
   out: 'storyboard.png', manifest: null, plan: 0, 'text-only': false, 'cell-range': null,
   batch: 0, detail: 'med',
   // scan-height 默认 0 = 交给预算推导（medium → 720p）；写死 360 会让 --size 永远不生效。
@@ -107,6 +109,7 @@ if (batchStep > 0) {
       input: localPath, from: w.from, to: w.to, cells: 0, sheets: 0,
       threshold: opt.threshold === 'auto' ? 'auto' : Number(opt.threshold),
       pick: String(opt.pick), burn: String(opt.burn), transcript: String(opt.transcript),
+      audioStrip: opt['audio-strip'],
       precomputed,
     });
     const image = `${base}-w${String(w.index).padStart(2, '0')}.png`;
@@ -160,6 +163,7 @@ const r = await runStoryboard({
   // 于是"关掉烧字"变成了"用默认大小烧"。
   badgeRatio: opt.badge === undefined ? 0.15 : Number(opt.badge),
   transcript: String(opt.transcript),
+  audioStrip: opt['audio-strip'],
   adaptive,
   tileFirst: process.argv.includes('--tile-first'),
   textOnly,
@@ -190,9 +194,10 @@ console.log(`[done] ${Date.now() - t0}ms`);
 
 if (opt.manifest) {
   const payload = {
+    ...buildEvidence(r),
     input, window: r.window, threshold: r.threshold, summary: r.summary,
     provenance: r.provenance,
-    audio: r.audio ? { mean: r.audio.mean, peak: r.audio.peak, silences: r.audio.silences } : null,
+    audio: r.audio ? { ...audioEvidence(r.audio), mean: r.audio.mean, peak: r.audio.peak, silences: r.audio.silences } : null,
     transcript: r.transcript,
     plan: r.plan,
     sheets: r.sheets.map((s) => ({
